@@ -211,31 +211,30 @@ response includes:
 Requesting the history of a contact, including all versions:
 
 ~~~json
-[["Contact/get", {
+[["ContactCard/get", {
   "accountId": "abc",
   "ids": ["contact1"],
-  "properties": ["firstName", "lastName", "emails"],
+  "properties": ["name", "emails"],
   "includeReplaced": true,
   "historyLimit": 10
 }, "0"]]
 ~~~
 
 The response includes three versions: the original creation,
-an update where the first name was changed, and the current
-version with an additional email address:
+a name update, and the current version with an additional email
+address:
 
 ~~~json
-[["Contact/get", {
+[["ContactCard/get", {
   "accountId": "abc",
   "state": "abc123",
   "list": [
     {
       "id": "contact1",
-      "firstName": "Robert",
-      "lastName": "Smith",
-      "emails": [
-        {"type": "work", "value": "bob@example.com"}
-      ],
+      "name": {"full": "Robert Smith"},
+      "emails": {
+        "e1": {"address": "bob@example.com"}
+      },
       "objectHistory": {
         "version": 1,
         "replaced": "2026-02-20T14:15:00Z"
@@ -243,11 +242,10 @@ version with an additional email address:
     },
     {
       "id": "contact1",
-      "firstName": "Bob",
-      "lastName": "Smith",
-      "emails": [
-        {"type": "work", "value": "bob@example.com"}
-      ],
+      "name": {"full": "Bob Smith"},
+      "emails": {
+        "e1": {"address": "bob@example.com"}
+      },
       "objectHistory": {
         "version": 2,
         "replaced": "2026-03-01T09:00:00Z"
@@ -255,13 +253,11 @@ version with an additional email address:
     },
     {
       "id": "contact1",
-      "firstName": "Bob",
-      "lastName": "Smith",
-      "emails": [
-        {"type": "work", "value": "bob@example.com"},
-        {"type": "personal",
-          "value": "bob@personal.example"}
-      ],
+      "name": {"full": "Bob Smith"},
+      "emails": {
+        "e1": {"address": "bob@example.com"},
+        "e2": {"address": "bob@personal.example"}
+      },
       "objectHistory": {
         "version": 3,
         "replaced": null
@@ -376,8 +372,7 @@ The initial values for existing registrations are:
 | Identity        | Yes              |
 | EmailSubmission | No               |
 | VacationResponse | Yes             |
-| Contact         | Yes              |
-| ContactGroup    | Yes              |
+| ContactCard     | Yes              |
 | AddressBook     | Yes              |
 | CalendarEvent   | Yes              |
 | Calendar        | Yes              |
@@ -400,7 +395,7 @@ Retaining historical versions of objects can consume significant
 server storage.  Servers SHOULD impose reasonable limits on
 history retention, either by duration (advertised via
 `maxHistoryDuration`) or by total storage.  Servers MAY
-silently discard old history entries when storage limits are
+silently discard history entries when storage limits are
 reached.
 
 ## Access Control
