@@ -1,0 +1,85 @@
+---
+title: JMAP Object History
+abbrev: JMAP Object History
+docname: draft-gondwana-jmap-object-history-00
+submissionType: IETF
+category: std
+updates:
+obsoletes:
+ipr: trust200902
+keyword: Internet-Draft
+stand_alone: yes
+pi: [toc, sortrefs, symrefs]
+
+author:
+ -
+    ins: B. Gondwana
+    name: Bron Gondwana
+    org: Fastmail
+    email: brong@fastmailteam.com
+
+normative:
+    JMAP-CORE: RFC8620
+
+informative:
+
+--- abstract
+
+TODO
+
+--- middle
+
+# Introduction
+
+TODO
+
+## Conventions Used in This Document
+
+{::boilerplate bcp14-tagged}
+
+# Addition to the Capabilities Object
+
+The capabilities object is returned as part of the JMAP Session
+object; see {{JMAP-CORE}}, Section 2.
+
+This document defines an additional capability URI.
+
+## urn:ietf:params:jmap:object-history
+
+TODO
+
+# Security Considerations
+
+TODO
+
+# IANA Considerations
+
+## JMAP Capability Registration for urn:ietf:params:jmap:object-history
+
+IANA is requested to register the "Object History" Capability as follows:
+
+Capability Name: urn:ietf:params:jmap:object-history
+
+Intended use: common
+
+Change Controller: IETF
+
+Specification document: this document
+
+Security and privacy considerations: this document, Security Considerations
+
+# Changes
+
+EDITOR: please remove this section before publication.
+
+The source of this document exists on github at: https://github.com/brong/draft-gondwana-jmap-object-history/
+
+**draft-gondwana-jmap-object-history-00**
+
+* initial proposal
+
+# Acknowledgements
+
+TODO
+
+{backmatter}
