@@ -86,10 +86,11 @@ on server capabilities for that account:
 
 * maxHistoryDuration: "UnsignedInt\|null"
 
-    The maximum number of seconds of history the server retains,
-    or null if the server does not impose a time-based limit.
-    Clients should not expect to retrieve versions older than
-    this duration.
+    The maximum number of seconds after replacement that the
+    server retains old versions, or null if the server does not
+    impose a time-based limit.  A version whose `replaced`
+    timestamp is more than this many seconds ago may have been
+    discarded.
 
 # Extensions to Foo/get
 
@@ -103,9 +104,10 @@ the following additional request arguments:
     requested objects in addition to the current version.
     Each previous version appears as a separate entry in the
     `list` array, with the same `id` as the current version.
-    Every entry includes an `objectHistory` property (see below).
-    Entries are ordered by version (ascending) within each
-    object.
+    Every entry includes an `objectHistory` property (see
+    below).  Entries with the same `id` MUST be ordered by
+    `objectHistory.version` (ascending).  Entries for
+    different objects MAY be interleaved.
 
 * includeDestroyed: "Boolean" (default: false)
 
@@ -120,18 +122,21 @@ the following additional request arguments:
 
 * historyAfter: "UTCDate\|null" (default: null)
 
-    If supplied, only versions with an `objectHistory.created`
-    value strictly after this date are returned.  This applies
-    to both historical and current versions.  If null, no
-    time-based filter is applied.
+    If supplied, only versions with an `objectHistory.replaced`
+    value strictly after this date are returned, plus the
+    current (live) version which has a null `replaced` value.
+    If null, no time-based filter is applied.
 
 * historyLimit: "UnsignedInt\|null" (default: null)
 
     If supplied, the maximum total number of entries to return
-    in the `list` array.  The server MUST return entries in
-    chronological order (by `objectHistory.created`).  If the
-    limit is reached, the response includes a
-    `historyCanLoadMore` property set to true.
+    in the `list` array.  The server MUST return the most
+    recent entries (those with the highest version numbers),
+    not the oldest.  If the limit is reached for any
+    requested id, the response includes a `hasMoreHistory`
+    property set to true.  A client that needs to know which
+    specific objects have more history available must fetch
+    each id individually.
 
 ## The objectHistory property
 
@@ -153,10 +158,6 @@ in the `list` array includes an additional property:
       MUST NOT rely on this — version numbers exist primarily
       to provide ordering within a single response.
 
-    * created: "UTCDate"
-      The date and time at which this version of the object was
-      recorded by the server.
-
     * replaced: "UTCDate\|null"
       The date and time at which this version was superseded,
       either by a subsequent update or by destruction.  If null,
@@ -169,6 +170,13 @@ When `includeReplaced` and `includeDestroyed` are both false
 (the default), the `objectHistory` property is not included in
 the response, and the behaviour is identical to standard Foo/get.
 
+The server is not required to create a new version for every
+individual change to an object.  For example, rapid successive
+updates may be collapsed into a single version.  The server MAY
+also prune old versions in any order, so there can be gaps in the
+version history available to the client.  Clients MUST NOT assume
+that the version history is complete or contiguous.
+
 If the server does not retain history for a particular data type,
 it MUST still return the current version with an `objectHistory`
 property when requested.  In this case, the server MAY return a
@@ -180,16 +188,25 @@ full history.
 
 ## Additional response properties
 
-When `historyLimit` is supplied, the response includes:
+When `includeReplaced` or `includeDestroyed` is true, the
+response includes:
 
-* historyCanLoadMore: "Boolean"
+* hasMoreHistory: "Boolean"
 
-    If true, there are additional entries that were not returned
-    due to `historyLimit`.  The client can make another request
-    with `historyAfter` set to the `objectHistory.created` value
-    of the last entry received to retrieve the next batch.
+    If true, there are older entries available for at least one
+    requested id.  The client can make a wider request (e.g.,
+    a larger `historyLimit` or individual id requests) to
+    retrieve more versions.  If false, the server has returned
+    all retained history for the requested ids.  The server MAY
+    return false even if more history exists (e.g., if it
+    cannot efficiently determine whether older versions remain).
+    If the server returns true, the client MUST NOT assume the
+    history will still be available in a subsequent request, as
+    the server may purge history at any time.
 
-## Example
+## Examples
+
+### Contact history
 
 Requesting the history of a contact, including all versions:
 
@@ -221,7 +238,6 @@ version with an additional email address:
       ],
       "objectHistory": {
         "version": 1,
-        "created": "2026-01-15T10:30:00Z",
         "replaced": "2026-02-20T14:15:00Z"
       }
     },
@@ -234,7 +250,6 @@ version with an additional email address:
       ],
       "objectHistory": {
         "version": 2,
-        "created": "2026-02-20T14:15:00Z",
         "replaced": "2026-03-01T09:00:00Z"
       }
     },
@@ -249,53 +264,80 @@ version with an additional email address:
       ],
       "objectHistory": {
         "version": 3,
-        "created": "2026-03-01T09:00:00Z",
         "replaced": null
       }
     }
   ],
   "notFound": [],
-  "historyCanLoadMore": false
+  "hasMoreHistory": false
 }, "0"]]
 ~~~
 
-Requesting the final version of a destroyed object:
+### Recovering destroyed emails
+
+A client can use Email/changes to discover which emails have been
+destroyed, then use a backreference to fetch their final state.
+This is useful for displaying a "recently deleted" view:
 
 ~~~json
-[["Contact/get", {
-  "accountId": "abc",
-  "ids": ["contact2"],
-  "properties": ["firstName", "lastName"],
-  "includeDestroyed": true
-}, "0"]]
+[
+  ["Email/changes", {
+    "accountId": "abc",
+    "sinceState": "state42"
+  }, "0"],
+  ["Email/get", {
+    "accountId": "abc",
+    "#ids": {
+      "resultOf": "0",
+      "name": "Email/changes",
+      "path": "/destroyed"
+    },
+    "properties": ["subject", "from", "receivedAt"],
+    "includeDestroyed": true
+  }, "1"]
+]
 ~~~
 
-The response shows the final state before destruction:
+The Email/get response returns the final state of each
+destroyed email.  The `objectHistory.replaced` value is the
+time of destruction:
 
 ~~~json
-[["Contact/get", {
+[["Email/get", {
   "accountId": "abc",
-  "state": "abc123",
+  "state": "state43",
   "list": [
     {
-      "id": "contact2",
-      "firstName": "Alice",
-      "lastName": "Jones",
+      "id": "email42",
+      "subject": "Meeting notes",
+      "from": [{"name": "Alice",
+        "email": "alice@example.com"}],
+      "receivedAt": "2026-03-10T09:00:00Z",
       "objectHistory": {
-        "version": 2,
-        "created": "2026-02-01T08:00:00Z",
-        "replaced": "2026-03-10T16:45:00Z"
+        "version": 1,
+        "replaced": "2026-03-15T16:30:00Z"
+      }
+    },
+    {
+      "id": "email57",
+      "subject": "Project update",
+      "from": [{"name": "Bob",
+        "email": "bob@example.com"}],
+      "receivedAt": "2026-03-12T14:00:00Z",
+      "objectHistory": {
+        "version": 1,
+        "replaced": "2026-03-15T16:31:00Z"
       }
     }
   ],
   "notFound": [],
-  "historyCanLoadMore": false
-}, "0"]]
+  "hasMoreHistory": false
+}, "1"]]
 ~~~
 
-Since `includeReplaced` was not set, only the final version is
-returned.  The non-null `replaced` value indicates that
-"contact2" was destroyed at that time.
+Since `includeReplaced` was not set, only the final version of
+each destroyed email is returned.  The non-null `replaced`
+value indicates when each email was destroyed.
 
 # IANA Considerations
 
