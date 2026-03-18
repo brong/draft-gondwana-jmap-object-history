@@ -24,7 +24,6 @@ normative:
 informative:
     JMAP-MAIL: RFC8621
     JMAP-CONTACTS: RFC9610
-    JMAP-CALENDARS: I-D.ietf-jmap-calendars
 
 --- abstract
 
@@ -48,8 +47,7 @@ previous values.
 In many applications it is useful to access historical versions
 of objects.  For example, a user may want to see previous versions
 of a contact record ({{JMAP-CONTACTS}}), recover a deleted
-calendar event ({{JMAP-CALENDARS}}), or audit changes to a shared
-mailbox ({{JMAP-MAIL}}).
+email ({{JMAP-MAIL}}), or audit changes to a shared mailbox.
 
 This extension adds history support to the standard Foo/get
 method.  When the `urn:ietf:params:jmap:object-history` capability
@@ -374,8 +372,6 @@ The initial values for existing registrations are:
 | VacationResponse | Yes             |
 | ContactCard     | Yes              |
 | AddressBook     | Yes              |
-| CalendarEvent   | Yes              |
-| Calendar        | Yes              |
 | Principal       | No               |
 | Quota           | No               |
 | FileNode        | Yes              |
