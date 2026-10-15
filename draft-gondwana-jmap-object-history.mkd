@@ -1,10 +1,9 @@
 ---
 title: JMAP Object History
 abbrev: JMAP Object History
-docname: draft-gondwana-jmap-object-history-00
+docname: draft-ietf-jmap-object-history-01
 submissionType: IETF
 category: std
-updates: 8620
 obsoletes:
 ipr: trust200902
 keyword: Internet-Draft
@@ -24,6 +23,14 @@ normative:
 informative:
     JMAP-MAIL: RFC8621
     JMAP-CONTACTS: RFC9610
+    JSCONTACT: RFC9553
+    JSCALENDAR: RFC8984
+    IANA-JMAP:
+        target: https://www.iana.org/assignments/jmap/
+        title: JSON Meta Application Protocol (JMAP)
+        author:
+         -
+            org: IANA
 
 --- abstract
 
@@ -46,8 +53,8 @@ previous values.
 
 In many applications it is useful to access historical versions
 of objects.  For example, a user may want to see previous versions
-of a contact record ({{JMAP-CONTACTS}}), recover a deleted
-email ({{JMAP-MAIL}}), or audit changes to a shared mailbox.
+of a contact record ({{JMAP-CONTACTS}}) or recover a deleted
+email ({{JMAP-MAIL}}).
 
 This extension adds history support to the standard Foo/get
 method.  When the `urn:ietf:params:jmap:object-history` capability
@@ -84,11 +91,25 @@ on server capabilities for that account:
 
 * maxHistoryDuration: "UnsignedInt\|null"
 
-    The maximum number of seconds after replacement that the
-    server retains old versions, or null if the server does not
-    impose a time-based limit.  A version whose `replaced`
-    timestamp is more than this many seconds ago may have been
-    discarded.
+    The number of seconds after replacement for which the server
+    intends to retain old versions, or null if the server does
+    not have a time-based retention policy.  This is a statement
+    of server policy, not a guarantee: retention is best effort,
+    and the server MAY discard versions sooner (for example, due
+    to storage limits).  A version whose `replaced` timestamp is
+    more than this many seconds ago has probably been discarded.
+    Clients that need to be certain an object remains available
+    should not destroy it.
+
+* supportedTypes: "String[]"
+
+    The names of the data types, from the "JMAP Data Types"
+    registry {{IANA-JMAP}} or private types, for which the server
+    supports the history extensions in this account.  A server
+    MAY support history for only a subset of the types it
+    supports, and MAY retain history for only some objects of
+    a supported type (for example, only for some folders).
+    Clients MUST ignore type names they do not recognise.
 
 # Extensions to Foo/get
 
@@ -125,16 +146,49 @@ the following additional request arguments:
     current (live) version which has a null `replaced` value.
     If null, no time-based filter is applied.
 
+* historyBefore: "UTCDate\|null" (default: null)
+
+    If supplied, only versions with an `objectHistory.replaced`
+    value strictly before this date are returned.  The current
+    (live) version, which has a null `replaced` value, is not
+    returned.  If null, no time-based filter is applied.
+
+    A client can use this to page backwards through history: it
+    passes the oldest `replaced` value from the previous response
+    as `historyBefore` in the next request.  When several ids are
+    requested, the client passes the oldest `replaced` value from
+    the whole response; any id with no remaining versions is
+    returned in `notFound`.  Clients SHOULD pass the `replaced`
+    value exactly as received, rather than parsing and
+    re-serialising it, since re-serialising at a lower precision
+    could cause versions to be skipped.
+
 * historyLimit: "UnsignedInt\|null" (default: null)
 
-    If supplied, the maximum total number of entries to return
-    in the `list` array.  The server MUST return the most
-    recent entries (those with the highest version numbers),
-    not the oldest.  If the limit is reached for any
-    requested id, the response includes a `hasMoreHistory`
-    property set to true.  A client that needs to know which
-    specific objects have more history available must fetch
-    each id individually.
+    If supplied, the maximum number of entries to return in the
+    `list` array for each id, including the current version if
+    any.  For each id, the server MUST return the most recent
+    entries (those with the highest version numbers), not the
+    oldest.  If more entries are available for any requested id
+    than were returned, the response includes a `hasMoreHistory`
+    property set to true.  Only ids for which exactly
+    `historyLimit` entries were returned can have more history
+    available.  If null, the server returns all retained
+    versions, subject to its own limits.
+
+If the `ids` argument is null, the server returns all objects of
+the type as per {{JMAP-CORE}}, Section 5.1.  If `includeDestroyed`
+is true, this includes every destroyed object for which the server
+still retains any version.
+
+The "maxObjectsInGet" limit and the "requestTooLarge" error
+({{JMAP-CORE}}, Section 5.1) apply to the number of distinct ids,
+not to the number of entries in the `list` array.  Each id can
+have up to `historyLimit` entries.
+
+If, after applying `includeReplaced`, `includeDestroyed`,
+`historyAfter`, and `historyBefore`, no versions of a requested id remain to be
+returned, that id is included in the `notFound` array.
 
 ## The objectHistory property
 
@@ -162,27 +216,54 @@ in the `list` array includes an additional property:
       this is the current live version of the object.  For
       destroyed objects, every version has a non-null `replaced`
       value — the final version's `replaced` is the time of
-      destruction.
+      destruction.  The `replaced` values of different versions
+      of the same object MUST be distinct, so that `historyBefore`
+      and `historyAfter` partition the history without ambiguity;
+      a server that records two versions with the same timestamp
+      can collapse them into a single version.  The value MAY
+      include fractional seconds ({{JMAP-CORE}}, Section 1.4),
+      but servers SHOULD NOT use more than millisecond precision,
+      as many client date libraries cannot represent more.
 
 When `includeReplaced` and `includeDestroyed` are both false
 (the default), the `objectHistory` property is not included in
 the response, and the behaviour is identical to standard Foo/get.
 
+The client MAY include "objectHistory" in the `properties` argument.
+It is returned if and only if `includeReplaced` or `includeDestroyed`
+is true, regardless of whether it is listed in `properties`.
+
+Which changes produce a version is server dependent: a version is
+a snapshot of the object that the server recorded at some point.
 The server is not required to create a new version for every
 individual change to an object.  For example, rapid successive
-updates may be collapsed into a single version.  The server MAY
-also prune old versions in any order, so there can be gaps in the
-version history available to the client.  Clients MUST NOT assume
-that the version history is complete or contiguous.
+updates may be collapsed into a single version, and a server may
+choose not to record a version for changes that only affect
+server-computed properties.  The server MAY also prune old versions
+in any order, so there can be gaps in the version history available
+to the client.  Clients MUST NOT assume that the version history is
+complete or contiguous.
 
-If the server does not retain history for a particular data type,
-it MUST still return the current version with an `objectHistory`
-property when requested.  In this case, the server MAY return a
-`version` of 1 for every object and a `replaced` of null, and
-ignore the `includeReplaced` flag (since there are no previous
-versions to return).  The `includeDestroyed` flag may still be
-honoured if the server tracks destroyed object ids even without
-full history.
+The values of server-computed properties (for example, the counts
+on a Mailbox) in a historical version are also server dependent.
+The server SHOULD return the value the property had at the time of
+that version if it has that information.
+
+If a historical version contains a reference to a blob (for
+example, the `blobId` of an Email), that blob MUST be downloadable
+for as long as the server returns that version.  A server that has
+discarded a blob referenced by a version MUST NOT return that
+version.
+
+If `includeReplaced` or `includeDestroyed` is true and the data type
+is not listed in the `supportedTypes` capability property, the
+server MUST reject the call with an "invalidArguments" error.
+
+If the data type is supported but the server does not retain
+history for a particular object, it MUST still return the current
+version with an `objectHistory` property when requested.  In this
+case, the server returns only the current version, with a `replaced`
+of null.
 
 ## Additional response properties
 
@@ -192,9 +273,9 @@ response includes:
 * hasMoreHistory: "Boolean"
 
     If true, there are older entries available for at least one
-    requested id.  The client can make a wider request (e.g.,
-    a larger `historyLimit` or individual id requests) to
-    retrieve more versions.  If false, the server has returned
+    requested id.  The client can retrieve more versions using
+    `historyBefore`, or by making a request with a larger
+    `historyLimit`.  If false, the server has returned
     all retained history for the requested ids.  The server MAY
     return false even if more history exists (e.g., if it
     cannot efficiently determine whether older versions remain).
@@ -333,6 +414,62 @@ Since `includeReplaced` was not set, only the final version of
 each destroyed email is returned.  The non-null `replaced`
 value indicates when each email was destroyed.
 
+# Restoring Objects
+
+To restore an earlier version of an existing object, the client
+uses a normal Foo/set update with the values from that version.
+
+To restore a destroyed object, the client uses Foo/set to create a
+new object with the values from the version to be restored.  When
+this capability is included in the request's `using` array, the
+client MAY include the `id` of the destroyed object in the create
+request.  The server MAY honour this, in which case the created
+object has that id and its history continues from the destroyed
+object's history, so the destroyed versions become previous
+versions of the restored object.  If the server does not wish to
+reuse the id, it MUST reject the creation with an
+"invalidProperties" SetError listing the `id` property; the client
+can then retry without an `id` to create the object with a new id.
+
+The server MUST reject a create with an `id` that is not the id of
+a destroyed object of the same type in the same account.  Apart
+from restoring a destroyed object in this way, the server MUST NOT
+reuse the id of a destroyed object for which it retains any
+history.
+
+# Design Rationale
+
+This section is not normative.
+
+History is returned through the existing Foo/get method rather than
+a new method.  The entries in the `list` array are ordinary objects
+of the data type, so a client can feed them to the same parser it
+uses for current objects, and the existing `properties` argument
+works unchanged.  It also allows a client to fetch the final state
+of many destroyed objects in a single call, using a backreference
+to the `destroyed` list from Foo/changes, as shown in the examples
+above.
+
+The history metadata is embedded in each object as the
+`objectHistory` property, rather than wrapping each object in a
+separate container, for the same reason: the entries remain
+ordinary objects.  This follows the existing pattern of JMAP-specific
+properties such as `id` being added to objects whose format is
+defined elsewhere; the `objectHistory` name is reserved in the
+relevant property registries (see {{iana-considerations}}).
+
+Each entry is a full copy of the object rather than a patch
+against the previous version.  Patches would save space, but the
+client would need every intermediate version to reconstruct any
+one of them, which conflicts with the server's freedom to prune
+versions, and the final version of a destroyed object would need
+to be returned in full anyway.
+
+Every superseded version carries a `replaced` timestamp.  The
+server always knows, at least approximately, when it replaced a
+snapshot it was keeping, and the timestamp is what a client needs
+to present history to a user and to filter it with `historyAfter`.
+
 # IANA Considerations
 
 ## JMAP Capability Registration for urn:ietf:params:jmap:object-history
@@ -354,31 +491,87 @@ Security Considerations
 ## Update to the JMAP Data Types Registry
 
 This document adds a "Supports History" column to the "JMAP Data
-Types" registry defined in {{JMAP-CORE}}, Section 9.4.  The value
+Types" registry {{IANA-JMAP}}.  The value
 is "Yes" or "No", indicating whether the data type supports the
 history extensions defined in this document.
 
 The initial values for existing registrations are:
 
-| Type Name       | Supports History |
-|-----------------|------------------|
-| Core/Echo       | No               |
-| Mailbox         | Yes              |
-| Thread          | No               |
-| Email           | Yes              |
-| SearchSnippet   | No               |
-| Identity        | Yes              |
-| EmailSubmission | No               |
-| VacationResponse | Yes             |
-| ContactCard     | Yes              |
-| AddressBook     | Yes              |
-| Principal       | No               |
-| Quota           | No               |
-| FileNode        | Yes              |
+| Type Name                 | Supports History |
+|---------------------------|------------------|
+| Core                      | No               |
+| PushSubscription          | No               |
+| Mailbox                   | Yes              |
+| Thread                    | No               |
+| Email                     | Yes              |
+| EmailDelivery             | No               |
+| SearchSnippet             | No               |
+| Identity                  | Yes              |
+| EmailSubmission           | No               |
+| VacationResponse          | Yes              |
+| MDN                       | No               |
+| Quota                     | No               |
+| SieveScript               | Yes              |
+| Principal                 | No               |
+| ShareNotification         | No               |
+| AddressBook               | Yes              |
+| ContactCard               | Yes              |
+| Calendar                  | Yes              |
+| CalendarEvent             | Yes              |
+| CalendarEventNotification | No               |
+| ParticipantIdentity       | Yes              |
 
 The default value for this column is "No".  New registrations
 that do not explicitly include a value are assumed not to
 support history.
+
+This column records whether history is meaningful for a data type.
+Whether a particular server supports history for a type is
+advertised in the `supportedTypes` capability property.
+
+## JSContact Property Registration
+
+IANA is requested to register the following property in the
+"JSContact Properties" registry defined in {{JSCONTACT}},
+Section 3, so that the name cannot be used for a property of a
+JSContact Card.
+
+Property Name:  objectHistory
+
+Property Type:  not applicable
+
+Property Context:  Card
+
+Intended Usage:  reserved
+
+Since Version:  1.0
+
+Change Controller:  IETF
+
+Reference:  this document
+
+## JSCalendar Property Registration
+
+IANA is requested to register the following property in the
+"JSCalendar Properties" registry defined in {{JSCALENDAR}},
+Section 8.2, so that the name cannot be used for a property of a
+JSCalendar object.
+
+Property Name:  objectHistory
+
+Property Type:  not applicable
+
+Property Context:  Event, Task, Group
+
+Intended Usage:  reserved
+
+Change Controller:  IETF
+
+Reference:  this document
+
+Specifications that define a JMAP data type whose object format is
+also governed by a separate property registry SHOULD reserve the
+`objectHistory` property name in that registry.
 
 # Security Considerations
 
@@ -399,9 +592,22 @@ reached.
 Historical versions of an object MUST respect the same access
 controls as the current version.  A user who does not have
 permission to read an object MUST NOT be able to read its
-history.  If an object's access permissions have changed over
-time, the server MUST only return versions for which the
-requesting user would have had read access.
+history.
+
+Access rights can change over time, for example when an object is
+shared with a new user, or moved into a shared container.  The
+server MUST NOT return a historical version to a user who could not
+have read that version at the time it was current.  This requires
+the server to track changes to access rights.  A server that does
+not keep a full history of access rights can take a conservative
+approach: record the point at which the access rights affecting an
+object (or its containing object, such as a Mailbox or AddressBook)
+last changed, for example as a modseq, and not return any version
+that was replaced before that point.
+
+Similarly, for destroyed objects, the server MUST NOT reveal the
+existence or content of a destroyed object to a user who could not
+read it at the time it was destroyed.
 
 ## Information Disclosure
 
@@ -413,11 +619,68 @@ SHOULD provide administrators with the ability to purge
 history for specific objects when required for privacy or
 compliance reasons.
 
+## Privacy Considerations
+
+When a server supports this extension, updating or destroying an
+object does not immediately remove the previous content from the
+server; it remains retrievable by anyone with read access to the
+object until the server discards it under its retention policy.
+Users may not expect this.  This is not new in kind (servers
+commonly retain deleted data in backups, and many mail systems
+offer a "recently deleted" view), but this extension makes such
+data retrievable through the protocol.
+
+Servers SHOULD make their retention policy visible to users, for
+example through the `maxHistoryDuration` capability property and
+the server's user interface.  Clients that present a "destroy"
+operation to users SHOULD NOT describe it as irreversible or
+permanent when the server advertises this capability for that data
+type.  Whether, and how, a user can request that history be purged
+before the end of the retention period is a matter of server
+policy and is outside the scope of this document.
+
 # Changes
 
 EDITOR: please remove this section before publication.
 
 The source of this document exists on github at: https://github.com/brong/draft-gondwana-jmap-object-history/
+
+**draft-ietf-jmap-object-history-01**
+
+* Removed "Updates: 8620"; the JMAP Data Types registry is not
+  defined by RFC 8620.  The registry is now referenced by name
+  rather than by its defining document.
+* Corrected the registry table to match the current registry.
+* `historyLimit` is now per id.
+* Defined behaviour for `ids: null` with `includeDestroyed`, and
+  clarified that "maxObjectsInGet" counts ids, not entries.
+* Ids with no matching versions are returned in `notFound`.
+* Which changes create a version, and the values of server-computed
+  properties, are server dependent.
+* Blobs referenced by returned versions must be downloadable.
+* Expanded access control considerations for changing access rights.
+* Added `supportedTypes` to the account capability; requesting
+  history for an unsupported type is an error.
+* Reserved the `objectHistory` property name in the JSContact and
+  JSCalendar property registries.
+* Added acknowledgements.
+* Added a Design Rationale section (Foo/get rather than a new method,
+  embedded metadata, full objects rather than patches, timestamps).
+* Added a Restoring Objects section: a client may ask to recreate a
+  destroyed object with its old id, and the server may accept or
+  reject; ids of destroyed objects are otherwise not reused.
+* `maxHistoryDuration` is now a best-effort statement of server policy.
+* Clarified that "objectHistory" may appear in `properties`.
+* Added Privacy Considerations.
+* Added `historyBefore` for paging backwards through history;
+  versions of the same object have distinct `replaced` values, with
+  at most millisecond precision.
+* Removed the audit use case from the introduction.
+
+**draft-ietf-jmap-object-history-00**
+
+* Uploaded with working-group adopted name.
+
 
 **draft-gondwana-jmap-object-history-00**
 
@@ -425,6 +688,8 @@ The source of this document exists on github at: https://github.com/brong/draft-
 
 # Acknowledgements
 
-TODO
+The author would like to thank Ben Bucksch, Mauro De Gennaro,
+Arnt Gulbrandsen, Neil Jenkins, and Robert Stepanek for their
+feedback on this document.
 
 {backmatter}
