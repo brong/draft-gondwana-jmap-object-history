@@ -1,7 +1,7 @@
 ---
 title: JMAP Object History
 abbrev: JMAP Object History
-docname: draft-ietf-jmap-object-history-01
+docname: draft-ietf-jmap-object-history-02
 submissionType: IETF
 category: std
 obsoletes:
@@ -163,18 +163,36 @@ the following additional request arguments:
     re-serialising it, since re-serialising at a lower precision
     could cause versions to be skipped.
 
+* historySkip: "UnsignedInt" (default: 0)
+
+    The number of entries to skip for each id, counting from the
+    most recent (the highest version number), before any entries
+    are returned.  The current version, if it would otherwise be
+    returned, counts as one entry.  For example, a client that
+    wants only versions older than the 20 most recent passes
+    `historySkip: 20`; any id with 20 or fewer matching entries
+    is returned in `notFound`.
+
+    A client can also use this to page backwards through history,
+    by adding the number of entries returned for an id to
+    `historySkip` in the next request.  This is less robust than
+    `historyBefore`: if a new version is recorded between
+    requests, the window shifts and one entry is returned again.
+
 * historyLimit: "UnsignedInt\|null" (default: null)
 
     If supplied, the maximum number of entries to return in the
     `list` array for each id, including the current version if
     any.  For each id, the server MUST return the most recent
-    entries (those with the highest version numbers), not the
-    oldest.  If more entries are available for any requested id
-    than were returned, the response includes a `hasMoreHistory`
-    property set to true.  Only ids for which exactly
-    `historyLimit` entries were returned can have more history
-    available.  If null, the server returns all retained
-    versions, subject to its own limits.
+    entries (those with the highest version numbers) remaining
+    after `historySkip` is applied, not the oldest.  If null, the
+    server returns all remaining retained versions, subject to
+    its own limits.
+
+The server applies `includeReplaced`, `includeDestroyed`,
+`historyAfter`, and `historyBefore` to select the matching
+versions of each id, then skips `historySkip` entries, then
+returns at most `historyLimit` of the remaining entries.
 
 If the `ids` argument is null, the server returns all objects of
 the type as per {{JMAP-CORE}}, Section 5.1.  If `includeDestroyed`
@@ -187,8 +205,9 @@ not to the number of entries in the `list` array.  Each id can
 have up to `historyLimit` entries.
 
 If, after applying `includeReplaced`, `includeDestroyed`,
-`historyAfter`, and `historyBefore`, no versions of a requested id remain to be
-returned, that id is included in the `notFound` array.
+`historyAfter`, `historyBefore`, and `historySkip`, no versions of a
+requested id remain to be returned, that id is included in the
+`notFound` array.
 
 ## The objectHistory property
 
@@ -224,6 +243,19 @@ in the `list` array includes an additional property:
       include fractional seconds ({{JMAP-CORE}}, Section 1.4),
       but servers SHOULD NOT use more than millisecond precision,
       as many client date libraries cannot represent more.
+
+    * hasOlder: "Boolean"
+      If true, the server retains at least one older version of
+      this object than this one, whether or not that version was
+      returned in this response.  A client can check `hasOlder`
+      on the oldest entry returned for an id to learn whether
+      more history is available, and retrieve it using
+      `historyBefore` or `historySkip`.  The server MAY return
+      false even if older versions exist (e.g., if it cannot
+      efficiently determine whether older versions remain).  If
+      the server returns true, the client MUST NOT assume the
+      older versions will still be available in a subsequent
+      request, as the server may purge history at any time.
 
 When `includeReplaced` and `includeDestroyed` are both false
 (the default), the `objectHistory` property is not included in
@@ -265,24 +297,6 @@ version with an `objectHistory` property when requested.  In this
 case, the server returns only the current version, with a `replaced`
 of null.
 
-## Additional response properties
-
-When `includeReplaced` or `includeDestroyed` is true, the
-response includes:
-
-* hasMoreHistory: "Boolean"
-
-    If true, there are older entries available for at least one
-    requested id.  The client can retrieve more versions using
-    `historyBefore`, or by making a request with a larger
-    `historyLimit`.  If false, the server has returned
-    all retained history for the requested ids.  The server MAY
-    return false even if more history exists (e.g., if it
-    cannot efficiently determine whether older versions remain).
-    If the server returns true, the client MUST NOT assume the
-    history will still be available in a subsequent request, as
-    the server may purge history at any time.
-
 ## Examples
 
 ### Contact history
@@ -316,7 +330,8 @@ address:
       },
       "objectHistory": {
         "version": 1,
-        "replaced": "2026-02-20T14:15:00Z"
+        "replaced": "2026-02-20T14:15:00Z",
+        "hasOlder": false
       }
     },
     {
@@ -327,7 +342,8 @@ address:
       },
       "objectHistory": {
         "version": 2,
-        "replaced": "2026-03-01T09:00:00Z"
+        "replaced": "2026-03-01T09:00:00Z",
+        "hasOlder": true
       }
     },
     {
@@ -339,12 +355,12 @@ address:
       },
       "objectHistory": {
         "version": 3,
-        "replaced": null
+        "replaced": null,
+        "hasOlder": true
       }
     }
   ],
-  "notFound": [],
-  "hasMoreHistory": false
+  "notFound": []
 }, "0"]]
 ~~~
 
@@ -390,7 +406,8 @@ time of destruction:
       "receivedAt": "2026-03-10T09:00:00Z",
       "objectHistory": {
         "version": 1,
-        "replaced": "2026-03-15T16:30:00Z"
+        "replaced": "2026-03-15T16:30:00Z",
+        "hasOlder": false
       }
     },
     {
@@ -401,12 +418,12 @@ time of destruction:
       "receivedAt": "2026-03-12T14:00:00Z",
       "objectHistory": {
         "version": 1,
-        "replaced": "2026-03-15T16:31:00Z"
+        "replaced": "2026-03-15T16:31:00Z",
+        "hasOlder": false
       }
     }
   ],
-  "notFound": [],
-  "hasMoreHistory": false
+  "notFound": []
 }, "1"]]
 ~~~
 
@@ -644,6 +661,14 @@ policy and is outside the scope of this document.
 EDITOR: please remove this section before publication.
 
 The source of this document exists on github at: https://github.com/brong/draft-gondwana-jmap-object-history/
+
+**draft-ietf-jmap-object-history-02**
+
+* Replaced the top-level `hasMoreHistory` response property with a
+  per-entry `objectHistory.hasOlder` property, so the client can
+  tell which ids have more history.
+* Added `historySkip`, to skip the N most recent versions of each
+  id; ids with N or fewer versions are returned in `notFound`.
 
 **draft-ietf-jmap-object-history-01**
 
