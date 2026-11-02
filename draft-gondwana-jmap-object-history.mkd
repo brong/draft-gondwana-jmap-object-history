@@ -16,6 +16,11 @@ author:
     name: Bron Gondwana
     org: Fastmail
     email: brong@fastmailteam.com
+ -
+    ins: J. Coffey
+    name: John Coffey
+    org: Coffey Labs
+    email: john@coffeylabs.org
 
 normative:
     JMAP-CORE: RFC8620
@@ -24,6 +29,10 @@ informative:
     JMAP-MAIL: RFC8621
     JMAP-CONTACTS: RFC9610
     JMAP-BLOB: I-D.ietf-jmap-blobext
+    JMAP-QUOTA: RFC9425
+    JMAP-SIEVE: RFC9661
+    IMAP: RFC9051
+    POP3: RFC1939
     JSCONTACT: RFC9553
     JSCALENDAR: RFC8984
     IANA-JMAP:
@@ -39,7 +48,7 @@ The JMAP base protocol (RFC8620) provides methods for synchronizing
 the current state of data objects between client and server.  This
 extension adds the ability to retrieve historical versions of objects,
 including objects that have been destroyed, by extending the standard
-Foo/get method.
+Foo/get method, and to find destroyed objects with Foo/query.
 
 --- middle
 
@@ -61,7 +70,8 @@ This extension adds history support to the standard Foo/get
 method.  When the `urn:ietf:params:jmap:object-history` capability
 is included in the request's `using` array, Foo/get gains
 additional parameters that allow the client to request previous
-versions of objects, including objects that have been destroyed.
+versions of objects, including objects that have been destroyed,
+and Foo/query can search the destroyed objects.
 
 ## Conventions Used in This Document
 
@@ -139,6 +149,14 @@ the following additional request arguments:
     has a non-null `objectHistory.replaced` value, since every
     version has been superseded (the final version was replaced
     by destruction).
+
+    An object counts as destroyed however it was removed: by
+    Foo/set, through another protocol (for example an IMAP EXPUNGE
+    {{IMAP}} or a POP3 DELE {{POP3}}), or by the server itself, for
+    example when it empties a Trash mailbox automatically or destroys
+    a Mailbox with `onDestroyRemoveEmails` ({{JMAP-MAIL}},
+    Section 2.5).  Likewise, changes made through other protocols can
+    create versions just as changes made through JMAP do.
 
 * historyAfter: "UTCDate\|null" (default: null)
 
@@ -262,6 +280,18 @@ in the `list` array includes an additional property:
       older versions will still be available in a subsequent
       request, as the server may purge history at any time.
 
+    * expires: "UTCDate\|null"
+      The time after which the server expects to discard this
+      version, or null if it has no planned time.  The current
+      (live) version of an object always has a null `expires`.
+      Like `maxHistoryDuration`, this is a best-effort statement
+      and not a guarantee: the server MAY discard the version
+      sooner, for example when storage runs short, and MAY return a
+      different value in a later response.  A client can use this
+      to tell the user how long a destroyed object can still be
+      recovered, but MUST NOT rely on the version remaining
+      available until then.
+
 When `includeReplaced` and `includeDestroyed` are both false
 (the default), the `objectHistory` property is not included in
 the response, and the behaviour is identical to standard Foo/get.
@@ -339,7 +369,8 @@ address:
       "objectHistory": {
         "version": 1,
         "replaced": "2026-02-20T14:15:00Z",
-        "hasOlder": false
+        "hasOlder": false,
+        "expires": "2026-03-22T14:15:00Z"
       }
     },
     {
@@ -351,7 +382,8 @@ address:
       "objectHistory": {
         "version": 2,
         "replaced": "2026-03-01T09:00:00Z",
-        "hasOlder": true
+        "hasOlder": true,
+        "expires": "2026-03-31T09:00:00Z"
       }
     },
     {
@@ -364,7 +396,8 @@ address:
       "objectHistory": {
         "version": 3,
         "replaced": null,
-        "hasOlder": true
+        "hasOlder": true,
+        "expires": null
       }
     }
   ],
@@ -415,7 +448,8 @@ time of destruction:
       "objectHistory": {
         "version": 1,
         "replaced": "2026-03-15T16:30:00Z",
-        "hasOlder": false
+        "hasOlder": false,
+        "expires": "2026-04-14T16:30:00Z"
       }
     },
     {
@@ -427,7 +461,8 @@ time of destruction:
       "objectHistory": {
         "version": 1,
         "replaced": "2026-03-15T16:31:00Z",
-        "hasOlder": false
+        "hasOlder": false,
+        "expires": "2026-04-14T16:31:00Z"
       }
     }
   ],
@@ -437,9 +472,113 @@ time of destruction:
 
 Since `includeReplaced` was not set, only the final version of
 each destroyed email is returned.  The non-null `replaced`
-value indicates when each email was destroyed.
+value indicates when each email was destroyed.  The server in
+this example keeps history for 30 days.
 
-# Restoring Objects
+# Extensions to Foo/query {#query}
+
+The Foo/changes approach in {{recovering-destroyed-emails}} only
+works for a client that holds a state string from before the
+objects were destroyed, and only while the server can still
+calculate changes from that state.  Foo/get with a null `ids`
+argument and `includeDestroyed` returns every retained object of
+the type at once, with no filtering, sorting or paging.
+
+When this capability is included in the request's `using` array,
+the standard Foo/query method ({{JMAP-CORE}}, Section 5.5) accepts
+the following additional request arguments:
+
+* onlyDestroyed: "Boolean" (default: false)
+
+    If true, the query runs over the destroyed objects of this
+    type for which the server still retains at least one version,
+    instead of over current objects.  An object restored with its
+    old id ({{restoring}}) is a current object again, and is not
+    included.
+
+* destroyedAfter: "UTCDate\|null" (default: null)
+
+    If supplied, only objects destroyed strictly after this date
+    are included.
+
+* destroyedBefore: "UTCDate\|null" (default: null)
+
+    If supplied, only objects destroyed strictly before this date
+    are included.
+
+The time an object was destroyed is the `replaced` value of its
+final version.
+
+The server MUST reject the call with an "invalidArguments" error if
+`onlyDestroyed` is true and the type is not listed in
+`supportedTypes`, or if `destroyedAfter` or `destroyedBefore` is
+supplied and `onlyDestroyed` is false.
+
+When `onlyDestroyed` is true:
+
+* The `filter` and `sort` arguments apply to the final version of
+  each destroyed object.  The server need not support every filter
+  condition or comparator for destroyed objects that it supports
+  for current objects.  It rejects one it does not support with
+  "unsupportedFilter" or "unsupportedSort", as usual.
+
+* If `sort` is null or empty, the results are ordered by time of
+  destruction, most recent first.
+
+* Arguments that apply only to current objects, such as
+  `collapseThreads` for Email, are ignored.
+
+* Foo/queryChanges works as for any other query.  An object leaves
+  the results when it is restored or discarded, and enters them
+  when it is destroyed.  A server that cannot track these changes
+  MAY return a "cannotCalculateChanges" error.
+
+The ids returned can then be passed to Foo/get with
+`includeDestroyed` set, usually with a backreference.
+
+## Example
+
+A client builds a "recently deleted" view of the 50 emails
+destroyed most recently since 1 March:
+
+~~~json
+[
+  ["Email/query", {
+    "accountId": "abc",
+    "onlyDestroyed": true,
+    "destroyedAfter": "2026-03-01T00:00:00Z",
+    "limit": 50
+  }, "0"],
+  ["Email/get", {
+    "accountId": "abc",
+    "#ids": {
+      "resultOf": "0",
+      "name": "Email/query",
+      "path": "/ids"
+    },
+    "properties": ["subject", "from", "receivedAt"],
+    "includeDestroyed": true
+  }, "1"]
+]
+~~~
+
+The Email/query response lists the destroyed emails, most recently
+destroyed first:
+
+~~~json
+[["Email/query", {
+  "accountId": "abc",
+  "queryState": "dq7",
+  "canCalculateChanges": true,
+  "position": 0,
+  "ids": ["email57", "email42"]
+}, "0"]]
+~~~
+
+The Email/get response is the same as in
+{{recovering-destroyed-emails}}.
+
+# Restoring Objects {#restoring}
 
 To restore an earlier version of an existing object, the client
 uses a normal Foo/set update with the values from that version.
@@ -465,6 +604,67 @@ history.
 Foo/changes reports a restored id in `updated` if the object existed
 at `sinceState`, and in `created` otherwise.  It never reports a
 restored id in `destroyed`.
+
+The server sets some properties itself, such as the `threadId` and
+`size` of an Email, and a client cannot include them in a create
+({{JMAP-CORE}}, Section 5.3).  When restoring, the client leaves
+these properties out, and the restored object MAY have different
+values for them, even when the server honours the id.
+
+Some types cannot be recreated through Foo/set from their
+properties.  An Email created with Email/set is a new message built
+from the parts given, not the original message.  To restore a
+destroyed Email, the client uses Email/import ({{JMAP-MAIL}},
+Section 4.8) with the `blobId`, `mailboxIds`, `keywords`, and
+`receivedAt` of the version being restored.  The blob stays
+downloadable for as long as the server returns that version
+({{the-objecthistory-property}}), so the client can pass the
+`blobId` without downloading it first.  When this capability is
+included in the request's `using` array, an EmailImport object MAY
+also include the `id` of the destroyed Email.  This has the same
+meaning, and follows the same rules, as an `id` in a Foo/set create
+above.  If the server does not wish to reuse the id, it rejects the
+import with an "invalidProperties" SetError listing the `id`
+property.
+
+Types whose content is a blob that Foo/set accepts on create, such
+as SieveScript {{JMAP-SIEVE}}, are restored by passing the old
+`blobId`.  A restored SieveScript is created inactive, as any new
+SieveScript is, and only becomes active if the client also passes
+`onSuccessActivateScript`.
+
+The version being restored may refer to an object that no longer
+exists, such as a Mailbox in an Email's `mailboxIds`.  The server
+then rejects the create or import as it would for any other
+reference to a nonexistent object.  The client can restore that
+object first, since Mailbox, AddressBook, and Calendar can have
+history too, or it can choose another one, for example the Mailbox
+with the "inbox" role.  The server can also reject a restore that
+conflicts with a current object, using the error that Foo/set would
+normally return; for example, a SieveScript whose name is now used
+by another script is rejected with "alreadyExists" ({{JMAP-SIEVE}},
+Section 2.4).
+
+## Example
+
+Having fetched `blobId`, `mailboxIds`, `keywords`, and `receivedAt`
+with `includeDestroyed`, the client restores email42 with its old
+id:
+
+~~~json
+[["Email/import", {
+  "accountId": "abc",
+  "emails": {
+    "r1": {
+      "id": "email42",
+      "blobId": "Gb5f55i6",
+      "mailboxIds": {"mb1": true},
+      "keywords": {"$seen": true},
+      "receivedAt": "2026-03-10T09:00:00Z"
+    }
+  }
+}, "0"]]
+~~~
 
 # Design Rationale
 
@@ -498,6 +698,13 @@ Every superseded version carries a `replaced` timestamp.  The
 server always knows, at least approximately, when it replaced a
 snapshot it was keeping, and the timestamp is what a client needs
 to present history to a user and to filter it with `historyAfter`.
+
+Destroyed objects are found with Foo/query rather than a new
+method, for the same reasons: the ids it returns go straight into
+Foo/get with `includeDestroyed`.  The query runs over destroyed
+objects only, rather than over current and destroyed objects
+together, because "recently deleted" is normally a separate view.
+It also lets a server keep destroyed objects in a separate index.
 
 # IANA Considerations
 
@@ -616,6 +823,11 @@ history retention, either by duration (advertised via
 silently discard history entries when storage limits are
 reached.
 
+Counting retained history towards a user's quota ({{JMAP-QUOTA}})
+is NOT RECOMMENDED.  If it counts, a user who destroys objects to
+free space sees no change until the history expires.  A restored
+object counts towards quota as any newly created object does.
+
 ## Access Control
 
 Historical versions of an object MUST respect the same access
@@ -668,6 +880,14 @@ type.  Whether, and how, a user can request that history be purged
 before the end of the retention period is a matter of server
 policy and is outside the scope of this document.
 
+## Harmful Content
+
+An administrator may remove content from an account because it is
+harmful, for example a phishing message or malware.  The server MAY
+decline to retain history for such an object, and MAY reject an
+attempt to restore it with a "forbidden" SetError, so that the user
+cannot bring the content back.
+
 # Changes
 
 EDITOR: please remove this section before publication.
@@ -676,6 +896,18 @@ The source of this document exists on github at: https://github.com/brong/draft-
 
 **draft-ietf-jmap-object-history-03**
 
+* Added John Coffey as co-author; folded in material from
+  draft-coffey-jmap-undelete.
+* Added Foo/query arguments `onlyDestroyed`, `destroyedAfter`, and
+  `destroyedBefore`, for finding destroyed objects without an old
+  state string.
+* Restoring: server-set properties are left out and may differ;
+  Email is restored with Email/import, which can take the old id;
+  notes on SieveScript, missing containers, and conflicts.
+* Added a per-version `expires` to `objectHistory`.
+* Destruction through other protocols and by the server counts as
+  destruction.
+* Security: quota, harmful content.
 * Paging several ids with `historyBefore` takes one Foo/get call per
   id.
 * The history arguments are ignored unless `includeReplaced` or
@@ -736,6 +968,6 @@ The source of this document exists on github at: https://github.com/brong/draft-
 
 # Acknowledgements
 
-The author would like to thank Mark Atwood, Ben Bucksch, Mauro De
+The authors would like to thank Mark Atwood, Ben Bucksch, Mauro De
 Gennaro, Arnt Gulbrandsen, Neil Jenkins, and Robert Stepanek for their
 feedback on this document.
