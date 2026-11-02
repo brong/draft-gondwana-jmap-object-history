@@ -28,8 +28,9 @@ normative:
 informative:
     JMAP-MAIL: RFC8621
     JMAP-CONTACTS: RFC9610
-    JMAP-BLOB: I-D.ietf-jmap-blobext
-    JMAP-QUOTA: RFC9425
+    JMAP-BLOBEXT: I-D.ietf-jmap-blobext
+    JMAP-FILENODE: I-D.ietf-jmap-filenode
+    JMAP-QUOTAS: RFC9425
     JMAP-SIEVE: RFC9661
     IMAP: RFC9051
     POP3: RFC1939
@@ -322,7 +323,7 @@ for as long as the server returns that version.  A version that is
 not current does not count as a reference to the blob, for garbage
 collection ({{JMAP-CORE}}, Section 6) or for any other purpose, such
 as the "blobHasReference" error and Blob/lookup method of
-{{JMAP-BLOB}}.  A server that discards a blob referenced by a
+{{JMAP-BLOBEXT}}.  A server that discards a blob referenced by a
 version MUST NOT return that version.
 
 If `includeReplaced` or `includeDestroyed` is true and the data type
@@ -756,6 +757,9 @@ The initial values for existing registrations are:
 | CalendarEvent             | Yes              |
 | CalendarEventNotification | No               |
 | ParticipantIdentity       | Yes              |
+| FileNode                  | Yes              |
+
+FileNode is registered by {{JMAP-FILENODE}}.
 
 The default value for this column is "No".  New registrations
 that do not explicitly include a value are assumed not to
@@ -823,7 +827,7 @@ history retention, either by duration (advertised via
 silently discard history entries when storage limits are
 reached.
 
-Counting retained history towards a user's quota ({{JMAP-QUOTA}})
+Counting retained history towards a user's quota ({{JMAP-QUOTAS}})
 is NOT RECOMMENDED.  If it counts, a user who destroys objects to
 free space sees no change until the history expires.  A restored
 object counts towards quota as any newly created object does.
@@ -915,6 +919,7 @@ The source of this document exists on github at: https://github.com/brong/draft-
 * Foo/changes reports a restored id as updated or created, never as
   destroyed.
 * Versions that are not current do not count as blob references.
+* Added FileNode to the "Supports History" table.
 * Thanks to Mark Atwood for an implementation review.
 
 **draft-ietf-jmap-object-history-02**
