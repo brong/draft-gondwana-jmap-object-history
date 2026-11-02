@@ -49,7 +49,8 @@ The JMAP base protocol (RFC8620) provides methods for synchronizing
 the current state of data objects between client and server.  This
 extension adds the ability to retrieve historical versions of objects,
 including objects that have been destroyed, by extending the standard
-Foo/get method, and to find destroyed objects with Foo/query.
+Foo/get method, to find destroyed objects with Foo/query, and to
+restore them with Foo/set.
 
 --- middle
 
@@ -72,7 +73,8 @@ method.  When the `urn:ietf:params:jmap:object-history` capability
 is included in the request's `using` array, Foo/get gains
 additional parameters that allow the client to request previous
 versions of objects, including objects that have been destroyed,
-and Foo/query can search the destroyed objects.
+Foo/query can search the destroyed objects, and Foo/set can
+restore them.
 
 ## Conventions Used in This Document
 
@@ -493,8 +495,8 @@ the following additional request arguments:
 
     If true, the query runs over the destroyed objects of this
     type for which the server still retains at least one version,
-    instead of over current objects.  An object restored with its
-    old id ({{restoring}}) is a current object again, and is not
+    instead of over current objects.  An object that has been
+    restored ({{restoring}}) is a current object again, and is not
     included.
 
 * destroyedAfter: "UTCDate\|null" (default: null)
@@ -584,86 +586,141 @@ The Email/get response is the same as in
 To restore an earlier version of an existing object, the client
 uses a normal Foo/set update with the values from that version.
 
-To restore a destroyed object, the client uses Foo/set to create a
-new object with the values from the version to be restored.  When
-this capability is included in the request's `using` array, the
-client MAY include the `id` of the destroyed object in the create
-request.  The server MAY honour this, in which case the created
-object has that id and its history continues from the destroyed
-object's history, so the destroyed versions become previous
-versions of the restored object.  If the server does not wish to
-reuse the id, it MUST reject the creation with an
-"invalidProperties" SetError listing the `id` property; the client
-can then retry without an `id` to create the object with a new id.
+To restore a destroyed object, the client uses the `restore`
+argument of Foo/set.
 
-The server MUST reject a create with an `id` that is not the id of
-a destroyed object of the same type in the same account.  Apart
-from restoring a destroyed object in this way, the server MUST NOT
-reuse the id of a destroyed object for which it retains any
-history.
+## Extensions to Foo/set
+
+When this capability is included in the request's `using` array,
+the standard Foo/set method ({{JMAP-CORE}}, Section 5.3) accepts
+the following additional request argument:
+
+* restore: "Id[PatchObject\|null]\|null" (default: null)
+
+    A map of the ids of destroyed objects to restore.  Each value
+    is null, or a PatchObject to apply to the restored object.  An
+    empty PatchObject means the same as null.
+
+The response has the following additional properties:
+
+* restored: "Id[Foo\|null]\|null"
+
+    A map of the ids of objects that were successfully restored.
+    The value for each is an object containing any properties of the
+    restored object whose values differ from those in the final
+    version with the patch applied, or null if there are none.  This
+    is null if no objects were restored.
+
+* notRestored: "Id\[SetError\]\|null"
+
+    A map of the ids of objects that could not be restored to a
+    SetError object explaining why.  This is null if every restore
+    succeeded or none was requested.
+
+The server MUST reject the call with an "invalidArguments" error if
+`restore` is non-null and the type is not listed in
+`supportedTypes`.
+
+The server processes each restore before any create, update, or
+destroy in the same call, so these can refer to a restored object.
+The restored object takes the id of the destroyed object, and the
+values of the final version of that object
+({{the-objecthistory-property}}), with the PatchObject applied.  The
+patch follows the same rules as a PatchObject in an update in
+Foo/set.  This includes server-set properties, such as the
+`threadId` and `size` of an Email.  These keep their values from
+the final version, unless the server cannot keep them, for
+example if the Thread no longer exists; the server then sets new
+values and returns them in `restored`.
+
+The history of the restored object continues from that of the
+destroyed object, so the destroyed versions become previous versions
+of the restored object.  To restore a version other than the final
+one, the client includes the values of that version in the
+PatchObject.
+
+The server rejects a restore with a SetError as follows:
+
+* notFound: The id is not the id of a destroyed object of this type
+  for which the server retains any history.  This includes the id of
+  a current object.
+
+* invalidPatch: The PatchObject is not valid.
+
+* invalidProperties: The restored object would not be valid, as for
+  an update in Foo/set.
+
+* forbidden: The server does not allow this object to be restored,
+  for example because of its content ({{harmful-content}}).
+
+* overQuota: The restored object would exceed a quota.
+
+The server MAY also return any other SetError that Foo/set returns
+for an update or create of this type.
+
+The server MUST NOT reuse the id of a destroyed object for which it
+retains any history, other than by restoring that object.
 
 Foo/changes reports a restored id in `updated` if the object existed
 at `sinceState`, and in `created` otherwise.  It never reports a
 restored id in `destroyed`.
 
-The server sets some properties itself, such as the `threadId` and
-`size` of an Email, and a client cannot include them in a create
-({{JMAP-CORE}}, Section 5.3).  When restoring, the client leaves
-these properties out, and the restored object MAY have different
-values for them, even when the server honours the id.
+## Type-Specific Notes
 
-Some types cannot be recreated through Foo/set from their
-properties.  An Email created with Email/set is a new message built
-from the parts given, not the original message.  To restore a
-destroyed Email, the client uses Email/import ({{JMAP-MAIL}},
-Section 4.8) with the `blobId`, `mailboxIds`, `keywords`, and
-`receivedAt` of the version being restored.  The blob stays
-downloadable for as long as the server returns that version
-({{the-objecthistory-property}}), so the client can pass the
-`blobId` without downloading it first.  When this capability is
-included in the request's `using` array, an EmailImport object MAY
-also include the `id` of the destroyed Email.  This has the same
-meaning, and follows the same rules, as an `id` in a Foo/set create
-above.  If the server does not wish to reuse the id, it rejects the
-import with an "invalidProperties" SetError listing the `id`
-property.
+A restored Email is the original message: it has the same `blobId`,
+and so the same content, as the final version.  A client can
+restore an Email with Email/set without fetching its content first.
 
-Types whose content is a blob that Foo/set accepts on create, such
-as SieveScript {{JMAP-SIEVE}}, are restored by passing the old
-`blobId`.  A restored SieveScript is created inactive, as any new
-SieveScript is, and only becomes active if the client also passes
-`onSuccessActivateScript`.
+A SieveScript {{JMAP-SIEVE}} is deactivated before it is destroyed
+({{JMAP-SIEVE}}, Section 2.4), so a restored SieveScript is not
+active.  The client can activate it with `onSuccessActivateScript`,
+using its id.
 
-The version being restored may refer to an object that no longer
-exists, such as a Mailbox in an Email's `mailboxIds`.  The server
-then rejects the create or import as it would for any other
-reference to a nonexistent object.  The client can restore that
-object first, since Mailbox, AddressBook, and Calendar can have
-history too, or it can choose another one, for example the Mailbox
-with the "inbox" role.  The server can also reject a restore that
-conflicts with a current object, using the error that Foo/set would
-normally return; for example, a SieveScript whose name is now used
-by another script is rejected with "alreadyExists" ({{JMAP-SIEVE}},
-Section 2.4).
+The final version may refer to an object that no longer exists,
+such as a Mailbox in an Email's `mailboxIds`.  The server then
+rejects the restore as it would an update that refers to a
+nonexistent object.  The client can restore that object first, in
+the same call or an earlier one, since Mailbox, AddressBook, and
+Calendar can have history too.  Or it can choose another one in the
+PatchObject, for example the Mailbox with the "inbox" role.  The
+server can also reject a restore that conflicts with a current
+object, using the error that Foo/set would normally return; for
+example, a SieveScript whose name is now used by another script is
+rejected with "alreadyExists" ({{JMAP-SIEVE}}, Section 2.4).
 
 ## Example
 
-Having fetched `blobId`, `mailboxIds`, `keywords`, and `receivedAt`
-with `includeDestroyed`, the client restores email42 with its old
-id:
+Having found email42 with Email/query (see {{query}}), the client
+restores it.  The Mailbox it was in has since been destroyed, so
+the client puts it in the Inbox (mb1):
 
 ~~~json
-[["Email/import", {
+[["Email/set", {
   "accountId": "abc",
-  "emails": {
-    "r1": {
-      "id": "email42",
-      "blobId": "Gb5f55i6",
-      "mailboxIds": {"mb1": true},
-      "keywords": {"$seen": true},
-      "receivedAt": "2026-03-10T09:00:00Z"
+  "restore": {
+    "email42": {
+      "mailboxIds": {"mb1": true}
     }
   }
+}, "0"]]
+~~~
+
+The server restores the Email.  It has kept its `threadId`, so no
+properties are returned:
+
+~~~json
+[["Email/set", {
+  "accountId": "abc",
+  "oldState": "s110",
+  "newState": "s111",
+  "created": null,
+  "updated": null,
+  "destroyed": null,
+  "notCreated": null,
+  "notUpdated": null,
+  "notDestroyed": null,
+  "restored": {"email42": null},
+  "notRestored": null
 }, "0"]]
 ~~~
 
@@ -699,6 +756,14 @@ Every superseded version carries a `replaced` timestamp.  The
 server always knows, at least approximately, when it replaced a
 snapshot it was keeping, and the timestamp is what a client needs
 to present history to a user and to filter it with `historyAfter`.
+
+Destroyed objects are restored with a new `restore` argument to
+Foo/set rather than by creating an object with the old id.  A
+create in Foo/set cannot set the id or server-set properties, so the
+restored object would differ from the original; an Email created
+with Email/set is a new message, not the original one.  Restoring
+the final version, with a patch, brings back the object exactly,
+and the client need not send the whole object back to the server.
 
 Destroyed objects are found with Foo/query rather than a new
 method, for the same reasons: the ids it returns go straight into
@@ -905,9 +970,11 @@ The source of this document exists on github at: https://github.com/brong/draft-
 * Added Foo/query arguments `onlyDestroyed`, `destroyedAfter`, and
   `destroyedBefore`, for finding destroyed objects without an old
   state string.
-* Restoring: server-set properties are left out and may differ;
-  Email is restored with Email/import, which can take the old id;
-  notes on SieveScript, missing containers, and conflicts.
+* Replaced restoring by creating with the old id (and Email/import
+  with the old id) with a new Foo/set `restore` argument, which
+  restores the final version with an optional patch, keeping
+  server-set properties.  Notes on Email, SieveScript, missing
+  containers, and conflicts.
 * Added a per-version `expires` to `objectHistory`.
 * Destruction through other protocols and by the server counts as
   destruction.
