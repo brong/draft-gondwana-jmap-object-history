@@ -1,7 +1,7 @@
 ---
 title: JMAP Object History
 abbrev: JMAP Object History
-docname: draft-ietf-jmap-object-history-02
+docname: draft-ietf-jmap-object-history-03
 submissionType: IETF
 category: std
 obsoletes:
@@ -23,6 +23,7 @@ normative:
 informative:
     JMAP-MAIL: RFC8621
     JMAP-CONTACTS: RFC9610
+    JMAP-BLOB: I-D.ietf-jmap-blobext
     JSCONTACT: RFC9553
     JSCALENDAR: RFC8984
     IANA-JMAP:
@@ -155,10 +156,10 @@ the following additional request arguments:
 
     A client can use this to page backwards through history: it
     passes the oldest `replaced` value from the previous response
-    as `historyBefore` in the next request.  When several ids are
-    requested, the client passes the oldest `replaced` value from
-    the whole response; any id with no remaining versions is
-    returned in `notFound`.  Clients SHOULD pass the `replaced`
+    as `historyBefore` in the next request.  Since `historyBefore`
+    applies to every id in the call, a client paging through the
+    history of several ids makes a separate Foo/get call for each
+    id.  Clients SHOULD pass the `replaced`
     value exactly as received, rather than parsing and
     re-serialising it, since re-serialising at a lower precision
     could cause versions to be skipped.
@@ -193,6 +194,10 @@ The server applies `includeReplaced`, `includeDestroyed`,
 `historyAfter`, and `historyBefore` to select the matching
 versions of each id, then skips `historySkip` entries, then
 returns at most `historyLimit` of the remaining entries.
+
+If `includeReplaced` and `includeDestroyed` are both false, the
+server ignores `historyAfter`, `historyBefore`, `historySkip`, and
+`historyLimit`.
 
 If the `ids` argument is null, the server returns all objects of
 the type as per {{JMAP-CORE}}, Section 5.1.  If `includeDestroyed`
@@ -283,9 +288,12 @@ that version if it has that information.
 
 If a historical version contains a reference to a blob (for
 example, the `blobId` of an Email), that blob MUST be downloadable
-for as long as the server returns that version.  A server that has
-discarded a blob referenced by a version MUST NOT return that
-version.
+for as long as the server returns that version.  A version that is
+not current does not count as a reference to the blob, for garbage
+collection ({{JMAP-CORE}}, Section 6) or for any other purpose, such
+as the "blobHasReference" error and Blob/lookup method of
+{{JMAP-BLOB}}.  A server that discards a blob referenced by a
+version MUST NOT return that version.
 
 If `includeReplaced` or `includeDestroyed` is true and the data type
 is not listed in the `supportedTypes` capability property, the
@@ -453,6 +461,10 @@ a destroyed object of the same type in the same account.  Apart
 from restoring a destroyed object in this way, the server MUST NOT
 reuse the id of a destroyed object for which it retains any
 history.
+
+Foo/changes reports a restored id in `updated` if the object existed
+at `sinceState`, and in `created` otherwise.  It never reports a
+restored id in `destroyed`.
 
 # Design Rationale
 
@@ -662,6 +674,17 @@ EDITOR: please remove this section before publication.
 
 The source of this document exists on github at: https://github.com/brong/draft-gondwana-jmap-object-history/
 
+**draft-ietf-jmap-object-history-03**
+
+* Paging several ids with `historyBefore` takes one Foo/get call per
+  id.
+* The history arguments are ignored unless `includeReplaced` or
+  `includeDestroyed` is true.
+* Foo/changes reports a restored id as updated or created, never as
+  destroyed.
+* Versions that are not current do not count as blob references.
+* Thanks to Mark Atwood for an implementation review.
+
 **draft-ietf-jmap-object-history-02**
 
 * Replaced the top-level `hasMoreHistory` response property with a
@@ -713,8 +736,6 @@ The source of this document exists on github at: https://github.com/brong/draft-
 
 # Acknowledgements
 
-The author would like to thank Ben Bucksch, Mauro De Gennaro,
-Arnt Gulbrandsen, Neil Jenkins, and Robert Stepanek for their
+The author would like to thank Mark Atwood, Ben Bucksch, Mauro De
+Gennaro, Arnt Gulbrandsen, Neil Jenkins, and Robert Stepanek for their
 feedback on this document.
-
-{backmatter}
