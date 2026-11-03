@@ -1,7 +1,7 @@
 ---
 title: JMAP Object History
 abbrev: JMAP Object History
-docname: draft-ietf-jmap-object-history-03
+docname: draft-ietf-jmap-object-history-04
 submissionType: IETF
 category: std
 obsoletes:
@@ -623,15 +623,32 @@ The server MUST reject the call with an "invalidArguments" error if
 
 The server processes each restore before any create, update, or
 destroy in the same call, so these can refer to a restored object.
+Where restored objects refer to other objects of the same type, the
+server MUST order the restores within a single call so that an
+object is restored before any restore that refers to it, as for
+creates in {{JMAP-CORE}}, Section 5.3; for example, a Mailbox is
+restored before a child Mailbox whose `parentId` refers to it.
+
 The restored object takes the id of the destroyed object, and the
 values of the final version of that object
-({{the-objecthistory-property}}), with the PatchObject applied.  The
-patch follows the same rules as a PatchObject in an update in
-Foo/set.  This includes server-set properties, such as the
-`threadId` and `size` of an Email.  These keep their values from
-the final version, unless the server cannot keep them, for
-example if the Thread no longer exists; the server then sets new
-values and returns them in `restored`.
+({{the-objecthistory-property}}), including server-set properties
+such as the `threadId` and `size` of an Email, with the PatchObject
+applied.  The patch follows the same rules as a PatchObject in an
+update in Foo/set: it MAY include a server-set property only if the
+value is the same as in the final version, and the server otherwise
+rejects the restore with "invalidProperties".  So a client can send
+a whole version of the object as the patch.
+
+Server-set properties keep their values from the final version.  The
+server MUST NOT change a property of the object through a destroy and
+restore in a way that it could not when updating the object if it had
+never been destroyed.  In particular, an immutable property, such as
+the `threadId` of an Email, keeps its value; if no other Email is in
+that Thread, the Thread exists again with the same id.  Where the
+server would also change a server-set property on an update, such as
+a modification time, it can change it on a restore, and returns the
+new values in `restored`.  If the server cannot restore the object
+without a change that is not allowed, it MUST reject the restore.
 
 The history of the restored object continues from that of the
 destroyed object, so the destroyed versions become previous versions
@@ -651,7 +668,9 @@ The server rejects a restore with a SetError as follows:
   an update in Foo/set.
 
 * forbidden: The server does not allow this object to be restored,
-  for example because of its content ({{harmful-content}}).
+  for example because of its content ({{harmful-content}}), or
+  because it cannot restore it without changing an immutable
+  property.
 
 * overQuota: The restored object would exceed a quota.
 
@@ -661,9 +680,24 @@ for an update or create of this type.
 The server MUST NOT reuse the id of a destroyed object for which it
 retains any history, other than by restoring that object.
 
-Foo/changes reports a restored id in `updated` if the object existed
-at `sinceState`, and in `created` otherwise.  It never reports a
-restored id in `destroyed`.
+Foo/changes ({{JMAP-CORE}}, Section 5.2) reports a restored object
+by comparing `sinceState` with the new state, exactly as if the object
+had never been destroyed between them:
+
+* If the object exists in both states, the id is reported in
+  `updated`, even if it was destroyed and restored in between.
+
+* If it exists only in the new state, the id is reported in
+  `created`.
+
+* If it exists only at `sinceState`, for example because it was
+  restored before `sinceState` and destroyed again after it, the id
+  is reported in `destroyed`.
+
+* If it exists in neither, because it was destroyed at `sinceState`
+  and was restored and destroyed again after it, the server SHOULD NOT
+  report the id at all, but MAY report it as for an object created
+  and destroyed since `sinceState` in {{JMAP-CORE}}, Section 5.2.
 
 ## Type-Specific Notes
 
@@ -680,9 +714,9 @@ The final version may refer to an object that no longer exists,
 such as a Mailbox in an Email's `mailboxIds`.  The server then
 rejects the restore as it would an update that refers to a
 nonexistent object.  The client can restore that object first, in
-the same call or an earlier one, since Mailbox, AddressBook, and
-Calendar can have history too.  Or it can choose another one in the
-PatchObject, for example the Mailbox with the "inbox" role.  The
+an earlier method call in the same request or in an earlier request,
+since Mailbox, AddressBook, and Calendar can have history too.  Or
+it can choose another one in the PatchObject, for example the Mailbox with the "inbox" role.  The
 server can also reject a restore that conflicts with a current
 object, using the error that Foo/set would normally return; for
 example, a SieveScript whose name is now used by another script is
@@ -705,8 +739,9 @@ the client puts it in the Inbox (mb1):
 }, "0"]]
 ~~~
 
-The server restores the Email.  It has kept its `threadId`, so no
-properties are returned:
+The server restores the Email, with the same `threadId` as before.
+No server-set property has changed, so the value in `restored` is
+null:
 
 ~~~json
 [["Email/set", {
@@ -962,6 +997,25 @@ cannot bring the content back.
 EDITOR: please remove this section before publication.
 
 The source of this document exists on github at: https://github.com/brong/draft-gondwana-jmap-object-history/
+
+**draft-ietf-jmap-object-history-04**
+
+* Restores of objects of the same type that refer to each other,
+  such as a Mailbox and its child, are ordered by the server, as
+  for creates in Foo/set.
+* Clarified that a restored object takes the server-set properties
+  of the final version; the patch may include them only with the
+  same values, as for any update.
+* A restore MUST NOT change a property in a way an update could
+  not, so an Email keeps its `threadId`; a server that cannot do
+  this rejects the restore with "forbidden".  Removed the example
+  of a new `threadId` when the Thread no longer exists.
+* A missing container is restored in an earlier method call or
+  request, not the same call.
+* Foo/changes reports a restored id by comparing `sinceState` with
+  the new state, as if the object had never been destroyed; it can
+  now be reported as destroyed, or not at all.
+* Thanks to John Coffey for review.
 
 **draft-ietf-jmap-object-history-03**
 
